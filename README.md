@@ -163,11 +163,13 @@ Cybersecurity AI (CAI) is a lightweight, open-source framework that empowers sec
     - [Ethical principles behind CAI](#ethical-principles-behind-cai)
     - [Closed-source alternatives](#closed-source-alternatives)
   - [Learn - `CAI` Fluency](#learn---cai-fluency)
+  - [:rocket: Getting Started](#rocket-getting-started)
   - [:nut\_and\_bolt: Install](#nut_and_bolt-install)
     - [OS X](#os-x)
     - [Ubuntu 24.04](#ubuntu-2404)
     - [Ubuntu 20.04](#ubuntu-2004)
     - [Windows WSL](#windows-wsl)
+    - [Windows Native (without WSL)](#windows-native-without-wsl)
     - [Android](#android)
     - [:nut\_and\_bolt: Setup `.env` file](#nut_and_bolt-setup-env-file)
     - [🔹 Custom OpenAI Base URL Support](#-custom-openai-base-url-support)
@@ -346,6 +348,75 @@ Cybersecurity AI is a critical field, yet many groups are misguidedly pursuing i
 
 
 
+## 🚀 Getting Started
+
+New to CAI? Follow these five steps to go from zero to a running instance on your machine.
+
+**Prerequisites:** [Python 3.9+](https://www.python.org/downloads/) and [Git](https://git-scm.com/downloads) must be installed.
+
+### Step 1 — Clone the repository
+
+```bash
+git clone https://github.com/aliasrobotics/cai
+cd cai
+```
+
+> **Prefer installing without cloning?** You can skip Steps 1–3 and run `pip install cai-framework` directly inside any virtual environment — then jump to Step 4.
+
+### Step 2 — Create a virtual environment
+
+```bash
+# Linux / macOS
+python3 -m venv cai_env
+source cai_env/bin/activate
+
+# Windows (PowerShell)
+python -m venv cai_env
+cai_env\Scripts\activate
+```
+
+### Step 3 — Install CAI
+
+```bash
+# Option A: install from the cloned source (recommended for development)
+pip install -e .
+
+# Option B: install the latest release from PyPI
+pip install cai-framework
+```
+
+### Step 4 — Configure your API key
+
+Copy the example environment file and add at least one LLM API key:
+
+```bash
+cp .env.example .env
+```
+
+> **Installed via `pip install cai-framework`?** The `.env.example` file is not bundled with the PyPI package. Create a fresh `.env` file in your working directory instead:
+> ```bash
+> # Creates (or overwrites) .env — only run this for a fresh setup
+> echo 'OPENAI_API_KEY="sk-your-key-here"' > .env
+> ```
+
+Open `.env` in any text editor and set `OPENAI_API_KEY` (or another supported provider key). The file must not be left empty — use `"sk-1234"` as a placeholder if you don't have a key yet.
+
+```
+OPENAI_API_KEY="sk-your-key-here"
+```
+
+> See [Setup `.env` file](#nut_and_bolt-setup-env-file) for the full list of supported variables.
+
+### Step 5 — Launch CAI
+
+```bash
+cai
+```
+
+The first launch may take up to 30 seconds while dependencies are cached. You should see the CAI prompt once it is ready.
+
+---
+
 ## :nut_and_bolt: Install
 
 > [!NOTE]
@@ -457,6 +528,38 @@ docker compose build && docker compose up -d
 #access cai
 docker compose exec cai cai
 ```
+
+### Windows Native (without WSL)
+
+You can run CAI directly on Windows (Python 3.9+) without WSL. The interactive shell sessions automatically use Windows-compatible subprocess pipes instead of Unix PTYs, so core AI agent functionality works natively.
+
+**Prerequisites:**
+- Python 3.9 or newer (https://www.python.org/downloads/)
+- Git for Windows (https://git-scm.com/download/win)
+
+```powershell
+# Create and activate a virtual environment
+python -m venv cai_env
+cai_env\Scripts\activate
+
+# Install CAI
+pip install cai-framework
+
+# Create a .env file with your API keys
+# (create it manually or use PowerShell)
+@"
+OPENAI_API_KEY="sk-1234"
+ANTHROPIC_API_KEY=""
+OLLAMA=""
+PROMPT_TOOLKIT_NO_CPR=1
+CAI_STREAM=false
+"@ | Out-File -Encoding utf8 .env
+
+# Launch CAI
+cai
+```
+
+> **Note:** Some security tools invoked by CAI agents (e.g. `nmap`, `gobuster`, Metasploit) are Linux-only. For full penetration-testing functionality, use WSL2 or the Docker image instead. The AI agent framework itself, model interactions, and Python-based tools run without issues on native Windows.
 
 
 ### Android

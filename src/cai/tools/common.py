@@ -6,14 +6,18 @@ inside or outside of virtual containers.
 import subprocess  # nosec B404
 import threading
 import os
-import pty
 import signal
 import time
 import uuid
 import sys
 import shlex
-import select
 from wasabi import color  # pylint: disable=import-error
+
+# pty and select are Unix-only modules; import them conditionally
+_IS_WINDOWS = sys.platform.startswith('win')
+if not _IS_WINDOWS:
+    import pty
+    import select
 from cai.util import format_time, start_active_timer, stop_active_timer, start_idle_timer, stop_idle_timer, cli_print_tool_output
 
 
@@ -198,28 +202,41 @@ class ShellSession:  # pylint: disable=too-many-instance-attributes
         # --- Start in Container ---
         if self.container_id:
             try:
-                self.master, self.slave = pty.openpty()
                 docker_cmd_list = [
-                    "docker", "exec", "-i", "-t",  # allocate a TTY inside the container
+                    "docker", "exec", "-i",
                     "-w", self.workspace_dir,
                     self.container_id,
                     "sh", "-c",
                     self.command,
                 ]
-                self.process = subprocess.Popen(
-                    docker_cmd_list,
-                    stdin=self.slave,
-                    stdout=self.slave,
-                    stderr=self.slave,
-                    preexec_fn=os.setsid,
-                    universal_newlines=True,
-                )
+                if not _IS_WINDOWS:
+                    # Use PTY for proper terminal emulation on Unix
+                    self.master, self.slave = pty.openpty()
+                    self.process = subprocess.Popen(
+                        docker_cmd_list,
+                        stdin=self.slave,
+                        stdout=self.slave,
+                        stderr=self.slave,
+                        preexec_fn=os.setsid,
+                        universal_newlines=True,
+                    )
+                else:
+                    # Windows: use pipes instead of PTY
+                    self.process = subprocess.Popen(
+                        docker_cmd_list,
+                        stdin=subprocess.PIPE,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        universal_newlines=True,
+                        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+                    )
                 self.is_running = True
                 self.output_buffer.append(
                     f"[Session {self.session_id}] Started in container {self.container_id[:12]}: "
                     f"{start_message_cmd} in {self.workspace_dir}"
                 )
-                threading.Thread(target=self._read_output, daemon=True).start()
+                read_target = self._read_output if not _IS_WINDOWS else self._read_output_windows
+                threading.Thread(target=read_target, daemon=True).start()
                 return None
             except Exception as e:
                 self.output_buffer.append(f"Error starting container session: {str(e)}")
@@ -246,21 +263,37 @@ class ShellSession:  # pylint: disable=too-many-instance-attributes
 
         # --- Start Locally (Host) ---
         try:
-            self.master, self.slave = pty.openpty()
-            self.process = subprocess.Popen(  # pylint: disable=subprocess-popen-preexec-fn
-                self.command,
-                shell=True,  # nosec B602
-                stdin=self.slave,
-                stdout=self.slave,
-                stderr=self.slave,
-                cwd=self.workspace_dir,
-                preexec_fn=os.setsid,
-                universal_newlines=True,
-            )
+            if not _IS_WINDOWS:
+                # Unix: use PTY for proper terminal emulation
+                self.master, self.slave = pty.openpty()
+                self.process = subprocess.Popen(  # pylint: disable=subprocess-popen-preexec-fn
+                    self.command,
+                    shell=True,  # nosec B602
+                    stdin=self.slave,
+                    stdout=self.slave,
+                    stderr=self.slave,
+                    cwd=self.workspace_dir,
+                    preexec_fn=os.setsid,
+                    universal_newlines=True,
+                )
+                read_target = self._read_output
+            else:
+                # Windows: use pipes instead of PTY
+                self.process = subprocess.Popen(  # nosec B602
+                    self.command,
+                    shell=True,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    cwd=self.workspace_dir,
+                    universal_newlines=True,
+                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+                )
+                read_target = self._read_output_windows
             self.is_running = True
             self.output_buffer.append(f"[Session {self.session_id}] Started: {self.command}")
             # Start a thread to read output
-            threading.Thread(target=self._read_output, daemon=True).start()
+            threading.Thread(target=read_target, daemon=True).start()
         except Exception as e:  # pylint: disable=broad-except
             self.output_buffer.append(f"Error starting local session: {str(e)}")
             self.is_running = False
@@ -317,7 +350,23 @@ class ShellSession:  # pylint: disable=too-many-instance-attributes
             self.output_buffer.append(f"Error in read_output loop: {str(e)}")
             self.is_running = False
             return str(e)
-    
+
+    def _read_output_windows(self):
+        """Read output from subprocess.PIPE (Windows-compatible).
+
+        Uses iter(readline, '') which naturally exits when the process
+        terminates and its stdout pipe is closed.
+        """
+        try:
+            for line in iter(self.process.stdout.readline, ''):
+                if not self.is_running:
+                    break
+                self.output_buffer.append(line)
+                self.last_activity = time.time()
+            self.is_running = False
+        except Exception as e:
+            self.output_buffer.append(f"Error in read_output_windows loop: {str(e)}")
+            self.is_running = False
 
     def is_process_running(self):
         """Check if the process is still running"""
@@ -344,12 +393,19 @@ class ShellSession:  # pylint: disable=too-many-instance-attributes
                 self.output_buffer.append(output)
                 return "Input sent to CTF session"
 
-            # --- Send to Local or Container PTY ---
-            if self.master is not None:
+            # --- Send to Local or Container PTY/PIPE ---
+            if not _IS_WINDOWS and self.master is not None:
+                # Unix: write to PTY master fd
                 input_data_bytes = (input_data.rstrip() + "\n").encode()
                 bytes_written = os.write(self.master, input_data_bytes)
                 if bytes_written != len(input_data_bytes):
                      self.output_buffer.append(f"[Session {self.session_id}] Warning: Partial input write.")
+                self.last_activity = time.time()
+                return "Input sent to session"
+            elif _IS_WINDOWS and self.process and self.process.stdin:
+                # Windows: write to subprocess stdin pipe
+                self.process.stdin.write(input_data.rstrip() + "\n")
+                self.process.stdin.flush()
                 self.last_activity = time.time()
                 return "Input sent to session"
             else:
@@ -395,28 +451,52 @@ class ShellSession:  # pylint: disable=too-many-instance-attributes
             self.is_running = False
 
             if self.process:
-                # Try to terminate the process group
-                try:
-                    pgid = os.getpgid(self.process.pid)
-                    os.killpg(pgid, signal.SIGTERM) 
-                except ProcessLookupError:
-                     pass # Process already gone
-                except subprocess.TimeoutExpired:
-                     print(color(f"Session {session_id_short} did not terminate gracefully, sending SIGKILL...", fg="yellow")) # noqa E501
-                     try:
-                          if pgid:
-                              os.killpg(pgid, signal.SIGKILL) # Force kill
-                          else:
-                              self.process.kill()
-                     except ProcessLookupError:
-                          pass # Already gone
-                     except Exception as kill_err:
-                          termination_message = f" (Error during SIGKILL: {kill_err})"
-                except Exception as term_err: # Catch other errors during SIGTERM
-                     termination_message = f" (Error during SIGTERM: {term_err})"
-                     try:
-                         self.process.kill()
-                     except Exception: pass # Ignore nested errors
+                if _IS_WINDOWS:
+                    # Windows: use terminate() then kill() with timeout
+                    try:
+                        self.process.terminate()
+                        try:
+                            self.process.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            print(color(f"Session {session_id_short} did not terminate gracefully, sending kill...", fg="yellow")) # noqa E501
+                            try:
+                                self.process.kill()
+                            except Exception as kill_err:
+                                termination_message = f" (Error during kill: {kill_err})"
+                    except ProcessLookupError:
+                        pass  # Process already gone
+                    except Exception as term_err:
+                        termination_message = f" (Error during terminate: {term_err})"
+                        try:
+                            self.process.kill()
+                        except Exception:
+                            pass  # Ignore nested errors
+                else:
+                    # Unix: kill the process group
+                    pgid = None
+                    try:
+                        pgid = os.getpgid(self.process.pid)
+                        os.killpg(pgid, signal.SIGTERM)
+                        self.process.wait(timeout=5)
+                    except ProcessLookupError:
+                        pass  # Process already gone
+                    except subprocess.TimeoutExpired:
+                        print(color(f"Session {session_id_short} did not terminate gracefully, sending SIGKILL...", fg="yellow")) # noqa E501
+                        try:
+                            if pgid:
+                                os.killpg(pgid, signal.SIGKILL)  # Force kill
+                            else:
+                                self.process.kill()
+                        except ProcessLookupError:
+                            pass  # Already gone
+                        except Exception as kill_err:
+                            termination_message = f" (Error during SIGKILL: {kill_err})"
+                    except Exception as term_err:  # Catch other errors during SIGTERM
+                        termination_message = f" (Error during SIGTERM: {term_err})"
+                        try:
+                            self.process.kill()
+                        except Exception:
+                            pass  # Ignore nested errors
 
 
                 # Final check

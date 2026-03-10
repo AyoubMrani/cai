@@ -3,6 +3,7 @@ Kill command for CAI REPL.
 This module provides commands for terminating active processes or sessions.
 """
 import os
+import sys
 import signal
 from typing import (
     List,
@@ -13,6 +14,8 @@ from rich.console import Console  # pylint: disable=import-error
 from cai.repl.commands.base import Command, register_command
 
 console = Console()
+
+_IS_WINDOWS = sys.platform.startswith('win')
 
 
 class KillCommand(Command):
@@ -53,15 +56,20 @@ class KillCommand(Command):
         try:
             pid = int(args[0])
 
-            # Try to kill the process group
-            try:
-                os.killpg(pid, signal.SIGTERM)
-                console.print(f"[green]Process group {pid} terminated[/green]")
-            except BaseException:  # pylint: disable=broad-exception-caught
-                # If killing the process group fails, try killing just the
-                # process
+            if _IS_WINDOWS:
+                # Windows: use os.kill with SIGTERM (no process groups)
                 os.kill(pid, signal.SIGTERM)
                 console.print(f"[green]Process {pid} terminated[/green]")
+            else:
+                # Unix: Try to kill the process group first
+                try:
+                    os.killpg(pid, signal.SIGTERM)
+                    console.print(f"[green]Process group {pid} terminated[/green]")
+                except BaseException:  # pylint: disable=broad-exception-caught
+                    # If killing the process group fails, try killing just the
+                    # process
+                    os.kill(pid, signal.SIGTERM)
+                    console.print(f"[green]Process {pid} terminated[/green]")
 
             return True
         except ValueError:
