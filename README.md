@@ -168,6 +168,7 @@ Cybersecurity AI (CAI) is a lightweight, open-source framework that empowers sec
     - [Ubuntu 24.04](#ubuntu-2404)
     - [Ubuntu 20.04](#ubuntu-2004)
     - [Windows WSL](#windows-wsl)
+    - [Windows Native (without WSL)](#windows-native-without-wsl)
     - [Android](#android)
     - [:nut\_and\_bolt: Setup `.env` file](#nut_and_bolt-setup-env-file)
     - [🔹 Custom OpenAI Base URL Support](#-custom-openai-base-url-support)
@@ -457,6 +458,38 @@ docker compose build && docker compose up -d
 #access cai
 docker compose exec cai cai
 ```
+
+### Windows Native (without WSL)
+
+You can run CAI directly on Windows (Python 3.9+) without WSL. The interactive shell sessions automatically use Windows-compatible subprocess pipes instead of Unix PTYs, so core AI agent functionality works natively.
+
+**Prerequisites:**
+- Python 3.9 or newer (https://www.python.org/downloads/)
+- Git for Windows (https://git-scm.com/download/win)
+
+```powershell
+# Create and activate a virtual environment
+python -m venv cai_env
+cai_env\Scripts\activate
+
+# Install CAI
+pip install cai-framework
+
+# Create a .env file with your API keys
+# (create it manually or use PowerShell)
+@"
+OPENAI_API_KEY="sk-1234"
+ANTHROPIC_API_KEY=""
+OLLAMA=""
+PROMPT_TOOLKIT_NO_CPR=1
+CAI_STREAM=false
+"@ | Out-File -Encoding utf8 .env
+
+# Launch CAI
+cai
+```
+
+> **Note:** Some security tools invoked by CAI agents (e.g. `nmap`, `gobuster`, Metasploit) are Linux-only. For full penetration-testing functionality, use WSL2 or the Docker image instead. The AI agent framework itself, model interactions, and Python-based tools run without issues on native Windows.
 
 
 ### Android
